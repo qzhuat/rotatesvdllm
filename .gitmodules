@@ -1,0 +1,3 @@
+[submodule "TransformerCompression"]
+	path = TransformerCompression
+	url = https://github.com/microsoft/TransformerCompression.git
