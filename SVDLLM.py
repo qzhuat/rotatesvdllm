@@ -153,8 +153,6 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
         subset = find_layers(layer)        
         def hook(module, input, output):
             inp = input[0].detach().float()
-            print(inp.shape)
-            print(inp.dim())
             if inp.dim() == 2:  # for opt
                 inp = inp.unsqueeze(0)
             adds = torch.matmul(inp.transpose(1,2), inp)
@@ -235,7 +233,7 @@ def whitening(model_name, model, profiling_mat, ratio, dev):
             svd_attn = SVD_LlamaAttention(config=model.config, ratio=ratio)
             svd_mlp = SVD_LlamaMLP(hidden_size=layer.hidden_size, intermediate_size=model.config.intermediate_size, hidden_act=model.config.hidden_act, ratio=ratio)
         elif "mistral" in model_name:
-            svd_attn = SVD_MistralAttention(config=model.config, ratio=ratio)
+            svd_attn = SVD_MistralAttention(config=model.config, ratzio=ratio)
             svd_mlp = SVD_MistralMLP(config=model.config, ratio=ratio)
         elif 'opt' in model_name:
             svd_decoder = SVDOPTDecoderLayer(model.config, ratio=ratio)

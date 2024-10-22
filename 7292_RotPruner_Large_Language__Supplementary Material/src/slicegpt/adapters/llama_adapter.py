@@ -12,8 +12,52 @@ from torch.nn import Linear, Module
 from transformers import PretrainedConfig, PreTrainedTokenizerBase
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaDecoderLayer, LlamaForCausalLM, LlamaRMSNorm
 
-from slicegpt.model_adapter import LayerAdapter, ModelAdapter, rot_mask_Linear
+from slicegpt.model_adapter import LayerAdapter, ModelAdapter
 from typing import Dict
+import torch.nn.functional as F
+
+class SRSTE(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input, mask, decay=0.00002):
+        ctx.save_for_backward(input)
+        ctx.mask = mask
+        ctx.decay = decay
+        
+        return input * (~mask)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        weight, = ctx.saved_tensors
+
+        return grad_output + ctx.decay * ctx.mask * weight, None
+    
+srste_mask = SRSTE.apply
+
+class rot_mask_Linear(Linear):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ori = 0 # 0 for right/output, 1 for left/input
+        self.Q = None
+        self.mask = None
+        
+    def forward(self, input):
+        W_ = self.weight.data
+        b_ = None
+        if self.bias is not None:
+            b_ = self.bias.data    
+        if self.Q is not None:
+            if self.ori == 1: # 左乘，对应输入，不需要对 b 处理
+                W_ = torch.matmul(W_, self.Q) # 实际上的矩阵要转置
+            else: # 右乘，对应输出，需要对 b 处理
+                W_ = torch.matmul(self.Q.T, W_)
+                if b_ is not None:
+                    b_ = torch.matmul(self.Q.T, b_)
+        if self.mask is not None:
+            W_ = srste_mask(W_, self.mask)
+            
+        return F.linear(input, W_, b_)
 
 class CompressedLlamaDecoderLayer(LlamaDecoderLayer):
     """
