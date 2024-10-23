@@ -14,7 +14,6 @@ import shutil
 from copy import deepcopy
 import torch
 import wandb
-
 from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
 from slicegpt.config import config
 from slicegpt.slicing_scheduler import ConstSlicingScheduler
@@ -24,6 +23,7 @@ from component.svd_mistral import SVD_MistralAttention, SVD_MistralMLP
 from component.svd_opt import SVDOPTDecoderLayer
 from utils.model_utils import *
 from evaluater import * 
+from slicegpt.adapters.llama_adapter import rot_mask_Linear
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,21 +153,28 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
         subset = find_layers(layer)        
         def hook(module, input, output):
             inp = input[0].detach().float()
+            # print(np.linalg.matrix_rank(inp.cpu().numpy()))
             if inp.dim() == 2:  # for opt
                 inp = inp.unsqueeze(0)
             adds = torch.matmul(inp.transpose(1,2), inp)
-            adds_sum = torch.sum(adds, dim=0)
+            # adds_sum = torch.sum(adds, dim=0)
             # print(adds_sum.shape)
             # print(adds_sum.dim())
             # print(torch.allclose(adds_sum, adds_sum.t()))
             # print(np.linalg.matrix_rank(adds_sum.cpu().numpy()))
-            # adds_sum = torch.sum(adds, dim=0)
+            adds_sum = torch.sum(adds, dim=0)
             # try:
             #     L = torch.linalg.cholesky(adds_sum)
             #     print("矩阵是正定的。")
             # except RuntimeError:
             #     print("矩阵不是正定的。")
             module.scaling_diag_matrix += adds_sum
+            # print(np.linalg.matrix_rank(module.scaling_diag_matrix.cpu().numpy()))
+            # try:
+            #     L = torch.linalg.cholesky(module.scaling_diag_matrix)
+            #     print("矩阵是正定的。")
+            # except RuntimeError:
+            #     print("矩阵不是正定的。")
             # a = module.scaling_diag_matrix
             # print(a.shape)
             # print(a.dim())
@@ -197,6 +204,12 @@ def profle_svdllm_low_resource(model_name, model, calib_loader, dev):
         torch.cuda.empty_cache()
         for name in subset:
             raw_scaling_diag_matrix = subset[name].scaling_diag_matrix.double().to(dev)
+            # print(np.linalg.matrix_rank(raw_scaling_diag_matrix.cpu().numpy()))
+            # try:
+            #     L = torch.linalg.cholesky(raw_scaling_diag_matrix)
+            #     print("矩阵是正定的。")
+            # except RuntimeError:
+            #     print("矩阵不是正定的。")
             try:
                 scaling_diag_matrix = torch.linalg.cholesky(raw_scaling_diag_matrix)
             except Exception as e:
@@ -291,28 +304,51 @@ def whitening(model_name, model, profiling_mat, ratio, dev):
                     layers[i] = svd_decoder
             else:
                 if "q_proj" in name:
-                    svd_attn.q_u_proj.weight.data = svd_u
-                    svd_attn.q_v_proj.weight.data = svd_v
+                    svd_attn.q_u_proj.weight.data = svd_u.half()
+                    svd_attn.q_v_proj.weight.data = svd_v.half()
                 elif "k_proj" in name:
-                    svd_attn.k_u_proj.weight.data = svd_u
-                    svd_attn.k_v_proj.weight.data = svd_v
+                    svd_attn.k_u_proj.weight.data = svd_u.half()
+                    svd_attn.k_v_proj.weight.data = svd_v.half()
                 elif "v_proj" in name:
-                    svd_attn.v_u_proj.weight.data = svd_u
-                    svd_attn.v_v_proj.weight.data = svd_v
+                    svd_attn.v_u_proj.weight.data = svd_u.half()
+                    svd_attn.v_v_proj.weight.data = svd_v.half()
                 elif "o_proj" in name:
-                    svd_attn.o_u_proj.weight.data = svd_u
-                    svd_attn.o_v_proj.weight.data = svd_v
+                    svd_attn.o_u_proj.weight.data = svd_u.half()
+                    svd_attn.o_v_proj.weight.data = svd_v.half()
                     layer.self_attn =  svd_attn
                 elif "gate_proj" in name:
-                    svd_mlp.gate_u_proj.weight.data = svd_u
-                    svd_mlp.gate_v_proj.weight.data = svd_v
+                    svd_mlp.gate_u_proj.weight.data = svd_u.half()
+                    svd_mlp.gate_v_proj.weight.data = svd_v.half()
                 elif "down_proj" in name:
-                    svd_mlp.down_u_proj.weight.data = svd_u
-                    svd_mlp.down_v_proj.weight.data = svd_v
+                    svd_mlp.down_u_proj.weight.data = svd_u.half()
+                    svd_mlp.down_v_proj.weight.data = svd_v.half()
                 elif "up_proj" in name:
-                    svd_mlp.up_u_proj.weight.data = svd_u
-                    svd_mlp.up_v_proj.weight.data = svd_v
+                    svd_mlp.up_u_proj.weight.data = svd_u.half()
+                    svd_mlp.up_v_proj.weight.data = svd_v.half()
                     layer.mlp = svd_mlp
+                # if "q_proj" in name:
+                #     svd_attn.q_u_proj.weight.data = svd_u
+                #     svd_attn.q_v_proj.weight.data = svd_v
+                # elif "k_proj" in name:
+                #     svd_attn.k_u_proj.weight.data = svd_u
+                #     svd_attn.k_v_proj.weight.data = svd_v
+                # elif "v_proj" in name:
+                #     svd_attn.v_u_proj.weight.data = svd_u
+                #     svd_attn.v_v_proj.weight.data = svd_v
+                # elif "o_proj" in name:
+                #     svd_attn.o_u_proj.weight.data = svd_u
+                #     svd_attn.o_v_proj.weight.data = svd_v
+                #     layer.self_attn =  svd_attn
+                # elif "gate_proj" in name:
+                #     svd_mlp.gate_u_proj.weight.data = svd_u
+                #     svd_mlp.gate_v_proj.weight.data = svd_v
+                # elif "down_proj" in name:
+                #     svd_mlp.down_u_proj.weight.data = svd_u
+                #     svd_mlp.down_v_proj.weight.data = svd_v
+                # elif "up_proj" in name:
+                #     svd_mlp.up_u_proj.weight.data = svd_u
+                #     svd_mlp.up_v_proj.weight.data = svd_v
+                #     layer.mlp = svd_mlp
             W = W_scale = scaling_matrix_inv = scaling_diag_matrix = U = S = VT  = truc_s = truc_u = truc_v = sqrtSigma = None
             del  W, W_scale, scaling_matrix_inv, scaling_diag_matrix, U, S, VT, truc_s, truc_u, truc_v, sqrtSigma
         del layer
@@ -630,59 +666,70 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.ratio = 1- args.ratio
     if args.step == 1:
-        model_adapter, tokenizer = hf_utils.get_model_and_tokenizer(
-            args.model, args.model_path, token=args.hf_token
-        )
-        model = model_adapter.model
-        dataset = data_utils.get_dataset(args.cal_dataset)
-        train_dataset = dataset["train"]
-        train_loader = data_utils.prepare_dataloader(
-        dataset=train_dataset,
-        tokenizer=tokenizer,
-        max_seqlen=args.cal_max_seqlen,
-        batch_size=args.cal_batch_size,
-        nsamples=args.cal_nsamples,
-        varied_seqlen=args.varied_seqlen,
-        seed=args.seed,
-        )
-        # train_loader = data_utils.prepare_dataloader_logits(train_loader, model)
-        test_dataset = data_utils.get_dataset(args.test_dataset)
-        test_dataset = test_dataset["test"]
-    
-        test_loader = data_utils.prepare_test_dataloader(
-        dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
-            )
-        # #start
-        layernorm_fusion.replace_layers(model_adapter)
-        layernorm_fusion.fuse_modules(model_adapter)
-        model = model_adapter.model
-        model_cp = deepcopy(model)
-        new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
-        scheduler = ConstSlicingScheduler(new_embedding_dimension)
-        # init_rotation_dir = pathlib.Path(args.save_dir) / f'{pathlib.Path(args.model).name}_{args.cal_dataset}_init_rotation.pt'
-        init_rotation_dir = pathlib.Path('q.pt')
-        if pathlib.Path.exists(init_rotation_dir):
-            Qs = torch.load(init_rotation_dir)
+        rotate_dir = pathlib.Path('rotate_dir.pt')
+        if pathlib.Path.exists(rotate_dir):
+            model, tokenizer = get_model_from_local(rotate_dir)
         else:
-            Qs = rotate.get_rotate_sequential(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
-            torch.save(Qs, init_rotation_dir) 
-            model_adapter._model = deepcopy(model_cp)
+            model_adapter, tokenizer = hf_utils.get_model_and_tokenizer(
+                args.model, args.model_path, token=args.hf_token
+            )
             model = model_adapter.model
-        new_Qs = []
-        for i in range(len(Qs)):
-            Q = Qs[i]
-            # if i <= args.num_Q:
-            new_Q = Q.to(dtype=torch.float16)
-            # new_Q.requires_grad = True
-            new_Qs.append(new_Q)
-                
-        print(len(Qs))
+            dataset = data_utils.get_dataset(args.cal_dataset)
+            train_dataset = dataset["train"]
+            train_loader = data_utils.prepare_dataloader(
+            dataset=train_dataset,
+            tokenizer=tokenizer,
+            max_seqlen=args.cal_max_seqlen,
+            batch_size=args.cal_batch_size,
+            nsamples=args.cal_nsamples,
+            varied_seqlen=args.varied_seqlen,
+            seed=args.seed,
+            )
+            # train_loader = data_utils.prepare_dataloader_logits(train_loader, model)
+            test_dataset = data_utils.get_dataset(args.test_dataset)
+            test_dataset = test_dataset["test"]
         
-        Qs = new_Qs
-        rotate.rotate_sequential(model_adapter, Qs, num=args.num_Q)
-        # #end
-        model = model_adapter.model
-        # mdodel, tokenizer = get_model_from_huggingface(model_id="jeffwan/llama-7b-hf")
+            test_loader = data_utils.prepare_test_dataloader(
+            dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
+                )
+            # #start
+            layernorm_fusion.replace_layers(model_adapter)
+            layernorm_fusion.fuse_modules(model_adapter)
+            model = model_adapter.model
+            model_cp = deepcopy(model)
+            new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
+            scheduler = ConstSlicingScheduler(new_embedding_dimension)
+            # init_rotation_dir = pathlib.Path(args.save_dir) / f'{pathlib.Path(args.model).name}_{args.cal_dataset}_init_rotation.pt'
+            init_rotation_dir = pathlib.Path('q.pt')
+            if pathlib.Path.exists(init_rotation_dir):
+                Qs = torch.load(init_rotation_dir)
+            else:
+                Qs = rotate.get_rotate_sequential(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
+                torch.save(Qs, init_rotation_dir) 
+                model_adapter._model = deepcopy(model_cp)
+                model = model_adapter.model
+            new_Qs = []
+            for i in range(len(Qs)):
+                Q = Qs[i]
+                # if i <= args.num_Q:
+                new_Q = Q.to(dtype=torch.float16)
+                # new_Q.requires_grad = True
+                new_Qs.append(new_Q)
+                    
+            print(len(Qs))
+            
+            Qs = new_Qs
+            rotate.rotate_sequential(model_adapter, Qs, num=args.num_Q)
+            # #end
+            model = model_adapter.model
+            torch.save({'model': model, 'tokenizer': tokenizer}, rotate_dir)
+        # model, tokenizer = get_model_from_huggingface(model_id="jeffwan/llama-7b-hf")
+        #test
+        # model_adapter, tokenizer = hf_utils.get_model_and_tokenizer(
+        #     args.model, args.model_path, token=args.hf_token
+        # )
+        # model = model_adapter.model
+        #test
         model = model.eval()
         profiling_mat_dir = pathlib.Path('profiling_mat.pt')
         # why eigen scaling_diag_matrix is not positive?(unsloved)
@@ -696,10 +743,16 @@ if __name__ == '__main__':
         else:
             # profiling_mat = torch.load(args.profiling_mat_path)
             profiling_mat = torch.load(profiling_mat_dir)
-        
-        whitening(args.model, model, profiling_mat, args.ratio, args.DEV)
-        if args.save_path is not None:
-            torch.save({'model': model, 'tokenizer': tokenizer}, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") +'_whitening_only_' + str(args.ratio) + '.pt')   # fp32
+         
+        model_dir = pathlib.Path('compress.pt')
+        if pathlib.Path.exists(model_dir):
+            model, tokenizer = get_model_from_local(model_dir)
+        else:
+            whitening(args.model, model, profiling_mat, args.ratio, args.DEV)
+            torch.save({'model': model, 'tokenizer': tokenizer}, model_dir)
+        # layers = model.model.layers
+        # torch.save({'model': model, 'tokenizer': tokenizer}, model_dir)   # fp32
+        ppl_eval(model, tokenizer, datasets=['wikitext2'], model_seq_len=args.model_seq_len, batch_size=args.eval_batch_size, device=args.DEV)
     elif args.step == 2:
         model, tokenizer = get_model_from_huggingface(model_id=args.model)
         dataloader, _ = get_loaders(args.dataset, nsamples=args.updating_nsamples, seed=args.seed, tokenizer=tokenizer, seqlen=args.model_seq_len)
@@ -725,18 +778,19 @@ if __name__ == '__main__':
             torch.save({'model': model, 'tokenizer': tokenizer}, args.save_path + "/" + args.model.replace("/", "_").replace("-", "_") +'_update_only_' + str(args.ratio) + '.pt')   # fp32
     elif args.step >= 4:
         print(f"evaluating {args.model_path}...")
-        if args.model_path == "original":
-            model, tokenizer = get_model_from_huggingface(args.model)
-        else:
-            model, tokenizer = get_model_from_local(args.model_path)
-            if args.lora is not None:
-                from utils.peft import PeftModel
-                model = PeftModel.from_pretrained(
-                    model,
-                    args.lora,
-                    torch_dtype=torch.float16,
-                )
-                model = model.merge_and_unload()
+        model_dir = pathlib.Path('model.pt')
+        # if args.model_path == "original":
+        #     model, tokenizer = get_model_from_huggingface(args.model)
+        # else:
+        model, tokenizer = get_model_from_local(model_dir)
+        if args.lora is not None:
+            from utils.peft import PeftModel
+            model = PeftModel.from_pretrained(
+                model,
+                args.lora,
+                torch_dtype=torch.float16,
+            )
+            model = model.merge_and_unload()
         model.eval()
         model = model.float()
         model = model.to(args.DEV)

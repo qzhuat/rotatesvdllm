@@ -3,6 +3,7 @@ import os
 import sys
 import torch
 import torch.nn as nn
+from slicegpt.adapters.llama_adapter import rot_mask_Linear
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +27,10 @@ def get_model_from_local(model_id):
     tokenizer, model = pruned_dict['tokenizer'], pruned_dict['model']
     return model, tokenizer
 
-def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
+def find_layers(module, layers=[nn.Conv2d, nn.Linear, rot_mask_Linear], name=''):
+    # type(module)
+    # print(type(module))
+    # print(name)
     if type(module) in layers:
         return {name: module}
     res = {}
@@ -35,3 +39,14 @@ def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
             child, layers=layers, name=name + '.' + name1 if name != '' else name1
         ))
     return res
+# def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
+#     type(module)
+#     print(type(module))
+#     if type(module) in layers:
+#         return {name: module}
+#     res = {}
+#     for name1, child in module.named_children():
+#         res.update(find_layers(
+#             child, layers=layers, name=name + '.' + name1 if name != '' else name1
+#         ))
+#     return res
